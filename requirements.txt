@@ -4,14 +4,11 @@ groq
 reportlab
 pandas
 numpy
-
 pypdf
 python-docx
 Pillow
-
 requests
 python-dotenv
-
 faiss-cpu
 sentence-transformers
 
@@ -19,10 +16,8 @@ sentence-transformers
 torch==2.8.0+cpu
 
 tavily-python
-
 langgraph
 langchain
 langchain-core
 langchain-community
-
 redis
