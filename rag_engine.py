@@ -4,12 +4,12 @@ from datetime import datetime
 
 from chroma_manager import (
     get_context,
-    get_source_information
+    get_source_information,
 )
 
 from utils import (
     search_web,
-    format_web_results
+    format_web_results,
 )
 
 from llm_service import call_llm
@@ -45,7 +45,7 @@ def get_document_context(query, top_k=RAG_TOP_K):
 
 
 def build_education_prompt(topic, context, student_level):
-    """Build a source-grounded, NCF 2023 and NEP 2020 aligned prompt."""
+    """Build an educational prompt grounded in the supplied context."""
 
     return f"""
 You are an expert AI Teacher Assistant aligned with NCF 2023
@@ -61,16 +61,16 @@ REFERENCE CONTENT:
 {context}
 
 INSTRUCTIONS:
-- Use the reference content as your primary source.
-- Do not invent document-specific facts.
-- If the reference does not contain the requested information,
-  clearly say: "Information not available in the uploaded document."
+- Use the supplied reference content as the primary source.
+- Do not invent facts from the document.
+- If information is missing, state:
+  "Information not available in the uploaded document."
 - Explain concepts in simple, age-appropriate language.
-- Focus on conceptual understanding, not rote memorization.
+- Focus on conceptual understanding rather than rote memorization.
 - Include practical classroom examples and activities where relevant.
-- Keep the response useful, organized, and classroom-ready.
+- Make the response useful and classroom-ready.
 
-Use the following structure when appropriate:
+Use these sections when appropriate:
 
 # Simple Explanation
 # Learning Outcomes
@@ -88,12 +88,10 @@ Use the following structure when appropriate:
 # Exam Tips
 # Summary
 
-For each activity, explain what the teacher and students should do
-and describe the expected learning outcome.
-
-Do not force irrelevant sections into answers where they are
-not suitable. Align educational suggestions with NCF 2023
-and NEP 2020.
+Explain what teachers and students should do for activities.
+Describe expected learning outcomes.
+Follow NCF 2023 and NEP 2020 principles.
+Avoid irrelevant sections and unsupported claims.
 """
 
 
@@ -103,26 +101,24 @@ and NEP 2020.
 
 def rag_answer(question, student_level="Class 5"):
     """
-    Answer using the document knowledge base first.
-    Use web search only when document context is unavailable.
+    Search uploaded documents first.
+    Fall back to web search when document context is unavailable.
     """
 
     try:
         context = get_document_context(question)
 
-        # ----------------------------------
-        # PRIMARY SOURCE: DOCUMENT KNOWLEDGE
-        # ----------------------------------
+        # Primary source: uploaded documents
         if context:
             prompt = build_education_prompt(
                 question,
                 context,
-                student_level
+                student_level,
             )
 
             answer = call_llm(
                 prompt,
-                max_tokens=RAG_MAX_TOKENS
+                max_tokens=RAG_MAX_TOKENS,
             )
 
             try:
@@ -136,40 +132,273 @@ def rag_answer(question, student_level="Class 5"):
                 "source_info": source_info,
                 "retrieval": {
                     "method": "Semantic Search",
-                    "chunks_used": RAG_TOP_K
+                    "chunks_used": RAG_TOP_K,
                 },
-                "generated_at": get_timestamp()
+                "generated_at": get_timestamp(),
             }
 
-        # ----------------------------------
-        # FALLBACK SOURCE: WEB SEARCH
-        # ----------------------------------
+        # Fallback source: web search
         web_results = search_web(question)
 
         if not web_results:
             return {
                 "answer": (
                     "No relevant information was found in the "
-                    "uploaded documents or web search. Please try "
-                    "a more specific question or upload a relevant document."
+                    "uploaded documents or web search. Try a more "
+                    "specific question or upload a relevant document."
                 ),
                 "source": "No Source Found",
                 "source_info": None,
-                "generated_at": get_timestamp()
+                "generated_at": get_timestamp(),
             }
 
         web_context = format_web_results(web_results)
 
         if not web_context or not web_context.strip():
             return {
-                "answer": (
-                    "Web search returned no usable reference content. "
-                    "Please try again or rephrase your question."
-                ),
+                "answer": "Web search returned no usable reference content.",
                 "source": "Web Search",
                 "source_info": None,
                 "web_results": web_results,
-                "generated_at": get_timestamp()
+                "generated_at": get_timestamp(),
             }
 
-        prompt = build_
+        prompt = build_education_prompt(
+            question,
+            web_context,
+            student_level,
+        )
+
+        answer = call_llm(
+            prompt,
+            max_tokens=RAG_MAX_TOKENS,
+        )
+
+        return {
+            "answer": answer,
+            "source": "Web Search",
+            "source_info": None,
+            "web_results": web_results,
+            "generated_at": get_timestamp(),
+        }
+
+    except Exception:
+        traceback.print_exc()
+
+        return {
+            "answer": (
+                "Sorry, I could not generate an answer right now. "
+                "Please try again shortly. If the problem continues, "
+                "check the Streamlit Cloud logs."
+            ),
+            "source": "Error",
+            "source_info": None,
+            "generated_at": get_timestamp(),
+        }
+
+
+# ==========================================
+# NOTES GENERATOR
+# ==========================================
+
+def generate_document_notes(topic, student_level="Class 5"):
+    """Generate study notes from uploaded document content."""
+
+    try:
+        context = get_document_context(topic)
+
+        if not context:
+            return (
+                "No relevant content found in the uploaded document."
+            )
+
+        prompt = f"""
+Generate NCF 2023 and NEP 2020 aligned study notes.
+
+TOPIC:
+{topic}
+
+STUDENT LEVEL:
+{student_level}
+
+REFERENCE DOCUMENT:
+{context}
+
+Include:
+1. Chapter Overview
+2. Learning Outcomes
+3. Competencies
+4. Key Concepts
+5. Detailed Notes
+6. Real-Life Examples
+7. Activity-Based Learning
+8. Inclusive Teaching Strategies
+9. Flow Chart
+10. Mind Map
+11. Revision Notes
+12. Summary
+
+Use simple, age-appropriate language.
+Prioritize information in the reference document.
+Do not invent document-specific facts.
+If a fact is unavailable, clearly identify the limitation.
+Keep the notes organized and useful for revision.
+"""
+
+        return call_llm(
+            prompt,
+            max_tokens=NOTES_MAX_TOKENS,
+        )
+
+    except Exception:
+        traceback.print_exc()
+        return "Could not generate notes. Please check the application logs."
+
+
+# ==========================================
+# MCQ GENERATOR
+# ==========================================
+
+def generate_document_mcqs(topic, difficulty="Mixed"):
+    """Generate document-grounded, competency-based MCQs."""
+
+    try:
+        context = get_document_context(topic)
+
+        if not context:
+            return (
+                "No relevant content found in the uploaded document."
+            )
+
+        prompt = f"""
+Generate competency-based MCQs aligned with NCF 2023 principles.
+
+TOPIC:
+{topic}
+
+REFERENCE DOCUMENT:
+{context}
+
+DIFFICULTY:
+{difficulty}
+
+Create a concise set of questions covering the requested topic.
+When appropriate, include a mix of:
+- Single Correct Answer
+- Multiple Correct Answers
+- All of the Above
+- None of the Above
+- Assertion and Reason
+- Case-Based Questions
+- Application-Based Questions
+- Critical Thinking
+- Real-Life Scenarios
+- Activity-Based Questions
+
+Organize questions under:
+# Learning Outcomes
+# Competencies
+# Easy Questions
+# Moderate Questions
+# Hard Questions
+
+For each question provide:
+Question Type
+Question
+Options A, B, C, D
+Correct Answer
+Brief Explanation
+Competency Assessed
+Learning Outcome Assessed
+
+Use clear, unambiguous options.
+For multiple-answer questions, identify every correct option.
+Ensure the answer key matches the options.
+Use the reference document as the primary source.
+Do not invent facts unsupported by the document.
+Keep the output concise and educationally useful.
+"""
+
+        return call_llm(
+            prompt,
+            max_tokens=MCQ_MAX_TOKENS,
+        )
+
+    except Exception:
+        traceback.print_exc()
+        return "Could not generate MCQs. Please check the application logs."
+
+
+# ==========================================
+# QUESTION PAPER GENERATOR
+# ==========================================
+
+def generate_document_question_paper(
+    topic,
+    marks=20,
+    difficulty="Mixed",
+):
+    """Generate a question paper based on uploaded document content."""
+
+    try:
+        context = get_document_context(topic)
+
+        if not context:
+            return (
+                "No relevant content found in the uploaded document."
+            )
+
+        prompt = f"""
+Generate a question paper aligned with NCF 2023 principles.
+
+TOPIC:
+{topic}
+
+REFERENCE DOCUMENT:
+{context}
+
+TOTAL MARKS:
+{marks}
+
+DIFFICULTY:
+{difficulty}
+
+Prepare a paper appropriate to the requested topic and level.
+
+Include:
+# Learning Outcomes
+# Competencies
+# Instructions
+# Marks Distribution
+
+## Section A: Easy Questions
+## Section B: Moderate Questions
+## Section C: Hard Questions
+## Section D: Case-Based Questions
+## Section E: Activity-Based Questions
+
+Finish with:
+# Answer Key
+# Competency Mapping
+
+Rules:
+- The total marks must equal {marks}.
+- Show the marks for every question.
+- Keep questions relevant to the topic and reference document.
+- Focus on conceptual understanding and real-life application.
+- Use age-appropriate language.
+- Do not invent facts unsupported by the document.
+- Keep the paper concise enough to fit the response limit.
+"""
+
+        return call_llm(
+            prompt,
+            max_tokens=QUESTION_PAPER_MAX_TOKENS,
+        )
+
+    except Exception:
+        traceback.print_exc()
+        return (
+            "Could not generate the question paper. "
+            "Please check the application logs."
+        )
